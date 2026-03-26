@@ -180,33 +180,21 @@ async function extractWorkerContext(
   }
 }
 
-// ── State check ──
-
-function isDuoActive(): boolean {
-  const stateFile = path.join(getDuoDir(), "state.json");
-  if (!fs.existsSync(stateFile)) return false;
-  try {
-    const state = JSON.parse(fs.readFileSync(stateFile, "utf-8"));
-    return state.active === true;
-  } catch {
-    return false;
-  }
-}
 
 // ── Main ──
 
 async function main() {
+  // Only activate when launched by `duo` CLI (env var gating)
+  if (process.env.DUO_ACTIVE !== "1") {
+    process.exit(0);
+  }
+
   // Read hook input from stdin
   const chunks: string[] = [];
   for await (const chunk of process.stdin) {
     chunks.push(chunk);
   }
   const input: HookInput = JSON.parse(chunks.join(""));
-
-  // If DuoCode not active, no opinion
-  if (!isDuoActive()) {
-    process.exit(0);
-  }
 
   // Auto-approve safe read-only tools
   if (AUTO_APPROVE_TOOLS.has(input.tool_name)) {

@@ -5,7 +5,6 @@ set -euo pipefail
 # Installs the DuoCode CLI and hooks
 
 DUO_DIR="${HOME}/.claude/hooks/duo"
-SETTINGS_FILE="${HOME}/.claude/settings.json"
 INSTALL_DIR="${HOME}/.local/share/duocode"
 BIN_DIR="${HOME}/.local/bin"
 REPO_URL="https://github.com/aymeric-roucher/DuoCode"
@@ -58,7 +57,8 @@ cat > "$DUO_DIR/mcp-config.json" << MCPEOF
 }
 MCPEOF
 
-# 6. Register PreToolUse hook in Claude Code settings
+# 6. Register global PreToolUse hook (gated by DUO_ACTIVE env var — no-op unless `duo` launched it)
+SETTINGS_FILE="${HOME}/.claude/settings.json"
 echo "  Registering hook..."
 
 if [ ! -f "$SETTINGS_FILE" ]; then
@@ -80,18 +80,14 @@ const existing = settings.hooks.PreToolUse.find(h =>
 if (!existing) {
   settings.hooks.PreToolUse.push({
     matcher: '',
-    hooks: [{
-      type: 'command',
-      command: hookCmd,
-      timeout: 60000
-    }]
+    hooks: [{ type: 'command', command: hookCmd, timeout: 60000 }]
   });
 }
 
 fs.writeFileSync('$SETTINGS_FILE', JSON.stringify(settings, null, 2));
 "
 
-# 7. Install the `duo` CLI binary
+# 7. Install the \`duo\` CLI binary
 echo "  Installing CLI..."
 mkdir -p "$BIN_DIR"
 

@@ -13,15 +13,21 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import fs from "fs";
+import path from "path";
 import {
   ensureQueues,
   getActionQueuePath,
   getDecisionQueuePath,
+  getDuoDir,
   readQueue,
   writeQueue,
 } from "../queue.js";
 
 ensureQueues();
+
+// Signal readiness so the CLI knows we can accept actions
+fs.writeFileSync(path.join(getDuoDir(), "ready"), String(process.pid));
 
 let hasPendingAction = false;
 

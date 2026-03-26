@@ -22,7 +22,6 @@ const DIM = "\x1b[2m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
 
 function printHeader() {
   console.log("");
@@ -94,7 +93,6 @@ function getMcpConfigPath(): string {
 }
 
 function ensureMcpConfig(): void {
-  // Resolve the server script path
   const srcServer = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
     "mcp",
@@ -137,6 +135,8 @@ function startSupervisor(): ChildProcess {
   ensureQueues();
   ensureMcpConfig();
 
+  const logFile = path.join(dir, "supervisor.log");
+
   const child = spawn(
     "claude",
     [
@@ -152,7 +152,11 @@ function startSupervisor(): ChildProcess {
       SUPERVISOR_PROMPT,
     ],
     {
-      stdio: "ignore",
+      stdio: [
+        "ignore",
+        fs.openSync(logFile, "w"),
+        fs.openSync(logFile, "a"),
+      ],
       detached: true,
       env: { ...process.env, DUO_DIR: dir },
     }
@@ -177,28 +181,25 @@ function stopSupervisor(): void {
 
 // ── Worker (the user-facing Claude Code) ──
 
-function launchWorker(prompt?: string): void {
+function launchWorker(prompt: string | undefined): void {
   const args: string[] = [];
 
   if (prompt) {
-    // Direct mode: pass prompt, but keep interactive (not -p)
-    // Use --initial-prompt so it runs interactively with the prompt pre-filled
-    args.push("-p", prompt);
+    args.push(prompt);
   }
 
-  // Spawn worker as a foreground child, inheriting the terminal
+  // Spawn worker as a foreground child, inheriting the terminal.
+  // DUO_ACTIVE=1 tells the global hook to activate.
   const worker = spawn("claude", args, {
     stdio: "inherit",
     env: { ...process.env, DUO_ACTIVE: "1" },
   });
 
   worker.on("exit", (code) => {
-    // Clean up supervisor when worker exits
     stopSupervisor();
     process.exit(code ?? 0);
   });
 
-  // Forward signals to worker
   process.on("SIGINT", () => worker.kill("SIGINT"));
   process.on("SIGTERM", () => {
     worker.kill("SIGTERM");
@@ -208,8 +209,8 @@ function launchWorker(prompt?: string): void {
 
 // ── Main ──
 
-const args = process.argv.slice(2);
-const command = args[0];
+const cliArgs = process.argv.slice(2);
+const command = cliArgs[0];
 
 if (command === "stop") {
   stopSupervisor();
@@ -241,6 +242,6 @@ if (isSupervisorAlive(state)) {
 }
 console.log("");
 
-// Launch worker — if args provided, use them as prompt
-const prompt = args.length > 0 ? args.join(" ") : undefined;
+// Launch worker
+const prompt = cliArgs.length > 0 ? cliArgs.join(" ") : undefined;
 launchWorker(prompt);
