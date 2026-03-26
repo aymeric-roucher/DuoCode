@@ -154,8 +154,8 @@ async function extractWorkerContext(
         if (entry.role === "assistant" && entry.content) {
           const textBlocks = Array.isArray(entry.content)
             ? entry.content
-                .filter((b: { type: string }) => b.type === "text")
-                .map((b: { text: string }) => b.text)
+              .filter((b: { type: string }) => b.type === "text")
+              .map((b: { text: string }) => b.text)
             : [String(entry.content)];
           if (textBlocks.length > 0) {
             contextParts.push(textBlocks.join("\n"));
@@ -246,7 +246,7 @@ async function main() {
     spinner.cleanup();
     // We still need to consume the supervisor's decision when it arrives
     // so the FIFO doesn't block. Fire-and-forget read.
-    decisionPromise.then(() => {}).catch(() => {});
+    decisionPromise.then(() => { }).catch(() => { });
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {

@@ -8,12 +8,17 @@
  *   duo "fix the bug"  — direct mode: pass prompt to worker
  *   duo stop           — stop a running supervisor
  *   duo status         — check supervisor status
+ *   duo whatsapp-login — one-time WhatsApp QR code login
  */
 
 import fs from "fs";
 import path from "path";
+import readline from "readline";
 import { spawn, type ChildProcess } from "child_process";
-import { getDuoDir, ensureQueues } from "./queue.js";
+import { getDuoDir, ensureQueues, getQuestionQueuePath, getAnswerQueuePath, readQueue, writeQueue } from "./queue.js";
+import { whatsappLogin } from "./whatsapp/login.js";
+import { createWhatsAppClient, type WhatsAppClient } from "./whatsapp/client.js";
+import { webAuthExists } from "./whatsapp/session.js";
 
 // ── Branding ──
 
@@ -35,27 +40,37 @@ function printHeader() {
 
 // ── Supervisor prompt ──
 
-const SUPERVISOR_PROMPT = `You are a code review supervisor. Your job is to review tool calls proposed by a worker Claude Code instance and approve or deny them.
+const SUPERVISOR_PROMPT = `You are a code review supervisor. You review every tool call proposed by a worker Claude Code instance.
 
-You have access to these tools:
-- review_next_action: Call this to wait for the next worker action. It blocks until the worker proposes a tool call, then returns the tool name, input, and the worker's reasoning context.
-- approve(reason): Approve the action so the worker can proceed.
-- deny(reason, feedback): Deny the action with constructive feedback. The worker will see your feedback and adjust. Always provide actionable feedback when denying.
-- ask_user(reason): Escalate to the human user when you're unsure or the action has significant consequences.
+You own every line of code that ships. The worker WILL cut corners — your job is to catch it.
+Your default posture is skepticism. If you're approving everything, you're not doing your job.
 
-## Review guidelines
+## When to DENY
 
-- **Approve** routine operations: reading files, running tests, standard builds, safe edits that match the task.
-- **Deny** dangerous operations: destructive commands (rm -rf, git reset --hard), operations on wrong files, changes that don't match the task, overly broad commands.
-- **Escalate** to the user for: irreversible operations on production, pushing code, creating PRs, anything with external side effects.
-- When denying, always explain what the worker should do instead.
+1. **Destructive commands** — rm -rf, git reset --hard, force push, DROP TABLE, git checkout, git stash
+2. **Scope drift** — worker drifting from the assigned task
+3. **Silent error handling** — try/catch that swallows errors, .catch(() => {})
+4. **Test deletion without fix** — never approve skipping failing tests
+5. **Unnecessary abstraction** — wrapper functions, "improvements" beyond what was asked
+6. **Unexplained large diff** — too large to understand; ask worker to explain
+7. **Whenever you're not happy with the agent's direction** — provide detailed guidance on what to do instead
 
-## Workflow
+## When to APPROVE
 
-1. Call review_next_action to get the first action
-2. Review it and call approve, deny, or ask_user
-3. Immediately call review_next_action again to wait for the next action
-4. Repeat until the session ends
+- The action **directly advances the assigned task**
+- The code is **minimal, correct, and tested**
+- You **understand what the change does and why**
+
+## When to ASK USER
+
+- Irreversible operations on production
+- Pushing code, creating PRs, anything with external side effects
+- Ambiguous requirements where shipping the wrong thing wastes effort
+- Use sparingly — only for true blockers, not routine decisions
+
+## Frontend work
+
+When the task involves frontend changes, instruct the worker to render the result as a PNG screenshot and provide the file path so you can inspect it visually.
 
 Start now by calling review_next_action.`;
 
@@ -145,7 +160,7 @@ function startSupervisor(): ChildProcess {
       "--mcp-config",
       getMcpConfigPath(),
       "--allowedTools",
-      "mcp__duo__review_next_action,mcp__duo__approve,mcp__duo__deny,mcp__duo__ask_user",
+      "mcp__duo__review_next_action,mcp__duo__approve,mcp__duo__deny,mcp__duo__ask_user,mcp__duo__escalate_to_user",
       "--disallowedTools",
       "Bash,Edit,Write,Read,Glob,Grep,Agent,WebFetch,WebSearch",
       "-p",
@@ -177,6 +192,57 @@ function stopSupervisor(): void {
     }
   }
   writeState({ active: false });
+}
+
+// ── Question listener (blocks on FIFO, prompts user via /dev/tty) ──
+
+async function listenForQuestions(whatsapp: WhatsAppClient | null): Promise<void> {
+  while (true) {
+    // Block until the supervisor asks a question
+    const raw = await readQueue(getQuestionQueuePath());
+    let question: string;
+    try {
+      const parsed = JSON.parse(raw);
+      question = parsed.question ?? raw;
+    } catch {
+      question = raw;
+    }
+
+    let answer: string;
+
+    if (whatsapp?.userJid) {
+      // Send via WhatsApp and wait for reply
+      const prefix = "[DuoCode Supervisor]";
+      answer = await whatsapp.sendAndWaitForReply(
+        whatsapp.userJid,
+        `${prefix} ${question}`,
+        5 * 60_000
+      );
+    } else {
+      // Prompt via terminal with audio ping
+      try {
+        // Audio ping — bell character
+        const ttyOut = fs.createWriteStream("/dev/tty");
+        ttyOut.write(`\n${CYAN}${BOLD}  ┃ Supervisor question:${RESET} ${question}\n`);
+        ttyOut.write("\x07"); // terminal bell
+        ttyOut.end();
+      } catch { /* no tty */ }
+
+      // Read answer from /dev/tty
+      answer = await new Promise<string>((resolve) => {
+        const ttyIn = fs.createReadStream("/dev/tty", { encoding: "utf-8" });
+        const rl = readline.createInterface({ input: ttyIn });
+        rl.question(`${CYAN}  ┃ Your answer: ${RESET}`, (ans) => {
+          rl.close();
+          ttyIn.destroy();
+          resolve(ans);
+        });
+      });
+    }
+
+    // Write answer back to supervisor
+    await writeQueue(getAnswerQueuePath(), answer);
+  }
 }
 
 // ── Worker (the user-facing Claude Code) ──
@@ -218,6 +284,13 @@ if (command === "stop") {
   process.exit(0);
 }
 
+if (command === "whatsapp-login") {
+  const authDir = path.join(getDuoDir(), "whatsapp-auth");
+  await whatsappLogin(authDir);
+  await new Promise((r) => setTimeout(r, 1000));
+  process.exit(0);
+}
+
 if (command === "status") {
   const state = readState();
   if (isSupervisorAlive(state)) {
@@ -241,6 +314,23 @@ if (isSupervisorAlive(state)) {
   console.log(`${GREEN}  Supervisor started${RESET} ${DIM}(PID ${child.pid})${RESET}`);
 }
 console.log("");
+
+// Connect WhatsApp if credentials exist
+const waAuthDir = path.join(getDuoDir(), "whatsapp-auth");
+let whatsapp: WhatsAppClient | null = null;
+if (webAuthExists(waAuthDir)) {
+  try {
+    whatsapp = await createWhatsAppClient(waAuthDir);
+    await whatsapp.connect();
+    console.log(`${GREEN}  WhatsApp connected${RESET}`);
+  } catch {
+    console.log(`${DIM}  WhatsApp unavailable (run 'duo whatsapp-login' to set up)${RESET}`);
+    whatsapp = null;
+  }
+}
+
+// Start listening for supervisor questions (blocks on FIFO, no polling)
+listenForQuestions(whatsapp).catch(() => {});
 
 // Launch worker
 const prompt = cliArgs.length > 0 ? cliArgs.join(" ") : undefined;

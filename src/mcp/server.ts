@@ -18,8 +18,10 @@ import path from "path";
 import {
   ensureQueues,
   getActionQueuePath,
+  getAnswerQueuePath,
   getDecisionQueuePath,
   getDuoDir,
+  getQuestionQueuePath,
   readQueue,
   writeQueue,
 } from "../queue.js";
@@ -136,10 +138,35 @@ server.tool(
 );
 
 // --- ask_user ---
+// Sends question to the CLI (via question queue) or WhatsApp, waits for answer.
 server.tool(
   "ask_user",
-  "Escalate the decision to the human user. The worker's normal permission dialog will appear.",
-  { reason: z.string().describe("Why this needs human review") },
+  "Ask the human user a question and wait for their reply. Use sparingly — only for true blockers like ambiguous requirements or high-stakes decisions. The question is sent to the user's terminal (with an audio ping) and optionally via WhatsApp.",
+  {
+    question: z.string().describe("The question to ask the user"),
+    timeout_minutes: z.number().optional().describe("How long to wait for a reply (default: 5)"),
+  },
+  async ({ question, timeout_minutes }) => {
+    const timeoutMs = (timeout_minutes ?? 5) * 60_000;
+
+    // Send question through the queue — the CLI will display it and collect the answer
+    await writeQueue(getQuestionQueuePath(), JSON.stringify({ question, timeoutMs }));
+
+    // Wait for answer
+    const answer = await readQueue(getAnswerQueuePath());
+
+    return {
+      content: [{ type: "text" as const, text: `User replied: ${answer}\n\nCall review_next_action to continue reviewing actions.` }],
+    };
+  }
+);
+
+// --- escalate_to_user ---
+// Falls through to normal Claude Code permission dialog (no supervisor decision)
+server.tool(
+  "escalate_to_user",
+  "Let the user decide on the pending action directly via Claude Code's normal permission dialog, bypassing the supervisor.",
+  { reason: z.string().describe("Why this needs the user's direct decision") },
   async ({ reason }) => {
     if (!hasPendingAction) {
       return {
@@ -160,7 +187,7 @@ server.tool(
     hasPendingAction = false;
 
     return {
-      content: [{ type: "text" as const, text: `Escalated to user. Reason: ${reason}\n\nCall review_next_action to wait for the next action.` }],
+      content: [{ type: "text" as const, text: `Escalated to user's permission dialog. Reason: ${reason}\n\nCall review_next_action to wait for the next action.` }],
     };
   }
 );

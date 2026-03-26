@@ -1,9 +1,11 @@
 /**
  * Queue — FIFO-based IPC between the PreToolUse hook and the MCP server.
  *
- * Two named pipes:
- *   action.queue  — hook writes proposed action, MCP server reads (blocks)
- *   decision.queue — MCP server writes decision, hook reads (blocks)
+ * Named pipes:
+ *   action.queue   — hook writes proposed action, MCP server reads
+ *   decision.queue — MCP server writes decision, hook reads
+ *   question.queue — MCP server writes user question, CLI reads
+ *   answer.queue   — CLI writes user answer, MCP server reads
  */
 
 import fs from "fs";
@@ -22,6 +24,14 @@ export function getDecisionQueuePath(): string {
   return path.join(getDuoDir(), "decision.queue");
 }
 
+export function getQuestionQueuePath(): string {
+  return path.join(getDuoDir(), "question.queue");
+}
+
+export function getAnswerQueuePath(): string {
+  return path.join(getDuoDir(), "answer.queue");
+}
+
 function ensureFifo(fifoPath: string): void {
   try {
     const stat = fs.statSync(fifoPath);
@@ -36,6 +46,8 @@ export function ensureQueues(): void {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   ensureFifo(getActionQueuePath());
   ensureFifo(getDecisionQueuePath());
+  ensureFifo(getQuestionQueuePath());
+  ensureFifo(getAnswerQueuePath());
 }
 
 /** Read from a named pipe. Blocks until a writer writes and closes. */
