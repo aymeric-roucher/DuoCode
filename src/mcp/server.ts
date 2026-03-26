@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+
+/**
+ * DuoCode MCP Server
+ *
+ * Exposes tools to the supervisor Claude Code:
+ *   - review_next_action: blocks until a worker tool call arrives via queue
+ *   - approve: unblocks the worker hook with "allow"
+ *   - deny: unblocks the worker hook with "deny" + feedback
+ *   - ask_user: escalates to the human user's permission dialog
+ */
+
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import {
+  ensureQueues,
+  getActionQueuePath,
+  getDecisionQueuePath,
+  readQueue,
+  writeQueue,
+} from "../queue.js";
+
+ensureQueues();
+
+let hasPendingAction = false;
+
+const server = new McpServer({
+  name: "duo-mcp",
+  version: "1.0.0",
+});
+
+// --- review_next_action ---
+server.tool(
+  "review_next_action",
+  "Wait for the next worker tool call to review. Blocks until the worker proposes an action. Returns the tool name, input, and worker context since last review.",
+  {},
+  async () => {
+    hasPendingAction = false;
+
+    const raw = await readQueue(getActionQueuePath());
+    let action: Record<string, unknown>;
+    try {
+      action = JSON.parse(raw);
+    } catch {
+      return {
+        content: [{ type: "text" as const, text: `Failed to parse action JSON: ${raw}` }],
+        isError: true,
+      };
+    }
+    hasPendingAction = true;
+
+    const toolName = (action.tool_name as string) || "unknown";
+    const toolInput = action.tool_input || {};
+    const workerContext = (action.worker_context as string) || "";
+
+    let text = "";
+    if (workerContext) {
+      text += `## Worker context since last review\n\n${workerContext}\n\n---\n\n`;
+    }
+    text += `## Proposed action\n\n`;
+    text += `**Tool:** ${toolName}\n`;
+    text += `**Input:**\n\`\`\`json\n${JSON.stringify(toolInput, null, 2)}\n\`\`\`\n`;
+
+    return { content: [{ type: "text" as const, text }] };
+  }
+);
+
+// --- approve ---
+server.tool(
+  "approve",
+  "Approve the pending worker action. The worker will proceed with the tool call.",
+  { reason: z.string().describe("Why you're approving this action") },
+  async ({ reason }) => {
+    if (!hasPendingAction) {
+      return {
+        content: [{ type: "text" as const, text: "No pending action to approve. Call review_next_action first." }],
+        isError: true,
+      };
+    }
+
+    const decision = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "allow",
+        permissionDecisionReason: `Supervisor approved: ${reason}`,
+      },
+    });
+
+    await writeQueue(getDecisionQueuePath(), decision);
+    hasPendingAction = false;
+
+    return {
+      content: [{ type: "text" as const, text: `Approved. Reason: ${reason}\n\nCall review_next_action to wait for the next action.` }],
+    };
+  }
+);
+
+// --- deny ---
+server.tool(
+  "deny",
+  "Deny the pending worker action with feedback. The worker will see your feedback and adjust its approach.",
+  {
+    reason: z.string().describe("Why you're denying this action"),
+    feedback: z.string().describe("Constructive feedback for the worker on what to do instead"),
+  },
+  async ({ reason, feedback }) => {
+    if (!hasPendingAction) {
+      return {
+        content: [{ type: "text" as const, text: "No pending action to deny. Call review_next_action first." }],
+        isError: true,
+      };
+    }
+
+    const decision = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: `Supervisor denied: ${reason}. Feedback: ${feedback}`,
+      },
+    });
+
+    await writeQueue(getDecisionQueuePath(), decision);
+    hasPendingAction = false;
+
+    return {
+      content: [{ type: "text" as const, text: `Denied. Reason: ${reason}\nFeedback: ${feedback}\n\nCall review_next_action to wait for the next action.` }],
+    };
+  }
+);
+
+// --- ask_user ---
+server.tool(
+  "ask_user",
+  "Escalate the decision to the human user. The worker's normal permission dialog will appear.",
+  { reason: z.string().describe("Why this needs human review") },
+  async ({ reason }) => {
+    if (!hasPendingAction) {
+      return {
+        content: [{ type: "text" as const, text: "No pending action to escalate. Call review_next_action first." }],
+        isError: true,
+      };
+    }
+
+    const decision = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason: `Supervisor escalated to user: ${reason}`,
+      },
+    });
+
+    await writeQueue(getDecisionQueuePath(), decision);
+    hasPendingAction = false;
+
+    return {
+      content: [{ type: "text" as const, text: `Escalated to user. Reason: ${reason}\n\nCall review_next_action to wait for the next action.` }],
+    };
+  }
+);
+
+// Start
+const transport = new StdioServerTransport();
+await server.connect(transport);
