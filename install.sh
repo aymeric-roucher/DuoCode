@@ -40,12 +40,29 @@ fi
 # 4. Create the hook runners
 cat > "$DUO_DIR/hook.sh" << HOOKEOF
 #!/usr/bin/env bash
+if [ "\${DUO_ACTIVE:-}" != "1" ]; then
+  exit 0
+fi
+# Check if supervisor is active before running the hook
+STATE="$DUO_DIR/state.json"
+if [ ! -f "\$STATE" ] || ! grep -q '"active": true' "\$STATE"; then
+  exit 0
+fi
+export DUO_ACTIVE=1
 exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/pre-tool-use.ts"
 HOOKEOF
 chmod +x "$DUO_DIR/hook.sh"
 
 cat > "$DUO_DIR/stop-hook.sh" << HOOKEOF
 #!/usr/bin/env bash
+if [ "\${DUO_ACTIVE:-}" != "1" ]; then
+  exit 0
+fi
+STATE="$DUO_DIR/state.json"
+if [ ! -f "\$STATE" ] || ! grep -q '"active": true' "\$STATE"; then
+  exit 0
+fi
+export DUO_ACTIVE=1
 exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/stop.ts"
 HOOKEOF
 chmod +x "$DUO_DIR/stop-hook.sh"

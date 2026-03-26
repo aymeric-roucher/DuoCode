@@ -184,7 +184,7 @@ async function extractWorkerContext(
 // ── Main ──
 
 async function main() {
-  // Only activate when launched by `duo` CLI (env var gating)
+  // Only activate when launched by `duo` (hook.sh sets this from state.json)
   if (process.env.DUO_ACTIVE !== "1") {
     process.exit(0);
   }

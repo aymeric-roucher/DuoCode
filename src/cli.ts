@@ -152,6 +152,10 @@ function startSupervisor(): ChildProcess {
 
   const logFile = path.join(dir, "supervisor.log");
 
+  // Write prompt to file to avoid shell escaping issues with long prompts
+  const promptFile = path.join(dir, "supervisor-prompt.txt");
+  fs.writeFileSync(promptFile, SUPERVISOR_PROMPT);
+
   const child = spawn(
     "claude",
     [
@@ -164,11 +168,12 @@ function startSupervisor(): ChildProcess {
       "--disallowedTools",
       "Bash,Edit,Write,Read,Glob,Grep,Agent,WebFetch,WebSearch",
       "-p",
-      SUPERVISOR_PROMPT,
+      "-",
+      "--verbose",
     ],
     {
       stdio: [
-        "ignore",
+        fs.openSync(promptFile, "r"),
         fs.openSync(logFile, "w"),
         fs.openSync(logFile, "a"),
       ],
