@@ -160,7 +160,7 @@ function startSupervisor(): ChildProcess {
       "--mcp-config",
       getMcpConfigPath(),
       "--allowedTools",
-      "mcp__duo__review_next_action,mcp__duo__approve,mcp__duo__deny,mcp__duo__ask_user,mcp__duo__escalate_to_user",
+      "mcp__duo__review_next_action,mcp__duo__approve,mcp__duo__deny,mcp__duo__guide_worker,mcp__duo__ask_user,mcp__duo__escalate_to_user",
       "--disallowedTools",
       "Bash,Edit,Write,Read,Glob,Grep,Agent,WebFetch,WebSearch",
       "-p",

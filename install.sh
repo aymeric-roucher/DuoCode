@@ -37,12 +37,18 @@ if [ ! -f "$DUO_DIR/state.json" ]; then
   echo '{"active": false}' > "$DUO_DIR/state.json"
 fi
 
-# 4. Create the hook runner
+# 4. Create the hook runners
 cat > "$DUO_DIR/hook.sh" << HOOKEOF
 #!/usr/bin/env bash
 exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/pre-tool-use.ts"
 HOOKEOF
 chmod +x "$DUO_DIR/hook.sh"
+
+cat > "$DUO_DIR/stop-hook.sh" << HOOKEOF
+#!/usr/bin/env bash
+exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/stop.ts"
+HOOKEOF
+chmod +x "$DUO_DIR/stop-hook.sh"
 
 # 5. Write MCP config for the supervisor
 cat > "$DUO_DIR/mcp-config.json" << MCPEOF
@@ -70,17 +76,22 @@ const fs = require('fs');
 const settings = JSON.parse(fs.readFileSync('$SETTINGS_FILE', 'utf-8'));
 
 if (!settings.hooks) settings.hooks = {};
+
+// PreToolUse hook
 if (!settings.hooks.PreToolUse) settings.hooks.PreToolUse = [];
-
-const hookCmd = '$DUO_DIR/hook.sh';
-const existing = settings.hooks.PreToolUse.find(h =>
-  h.hooks && h.hooks.some(hh => hh.command && hh.command.includes('duo'))
-);
-
-if (!existing) {
+if (!settings.hooks.PreToolUse.some(h => h.hooks?.some(hh => hh.command?.includes('duo')))) {
   settings.hooks.PreToolUse.push({
     matcher: '',
-    hooks: [{ type: 'command', command: hookCmd, timeout: 60000 }]
+    hooks: [{ type: 'command', command: '$DUO_DIR/hook.sh', timeout: 60000 }]
+  });
+}
+
+// Stop hook
+if (!settings.hooks.Stop) settings.hooks.Stop = [];
+if (!settings.hooks.Stop.some(h => h.hooks?.some(hh => hh.command?.includes('duo')))) {
+  settings.hooks.Stop.push({
+    matcher: '',
+    hooks: [{ type: 'command', command: '$DUO_DIR/stop-hook.sh', timeout: 60000 }]
   });
 }
 

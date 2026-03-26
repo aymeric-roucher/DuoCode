@@ -107,12 +107,11 @@ server.tool(
 // --- deny ---
 server.tool(
   "deny",
-  "Deny the pending worker action with feedback. The worker will see your feedback and adjust its approach.",
+  "Reject the pending tool call with feedback. The worker will see your feedback and adjust.",
   {
-    reason: z.string().describe("Why you're denying this action"),
-    feedback: z.string().describe("Constructive feedback for the worker on what to do instead"),
+    feedback: z.string().describe("Why you're denying and what to do instead"),
   },
-  async ({ reason, feedback }) => {
+  async ({ feedback }) => {
     if (!hasPendingAction) {
       return {
         content: [{ type: "text" as const, text: "No pending action to deny. Call review_next_action first." }],
@@ -124,7 +123,7 @@ server.tool(
       hookSpecificOutput: {
         hookEventName: "PreToolUse",
         permissionDecision: "deny",
-        permissionDecisionReason: `Supervisor denied: ${reason}. Feedback: ${feedback}`,
+        permissionDecisionReason: `Supervisor denied: ${feedback}`,
       },
     });
 
@@ -132,7 +131,39 @@ server.tool(
     hasPendingAction = false;
 
     return {
-      content: [{ type: "text" as const, text: `Denied. Reason: ${reason}\nFeedback: ${feedback}\n\nCall review_next_action to wait for the next action.` }],
+      content: [{ type: "text" as const, text: `Denied: ${feedback}\n\nCall review_next_action to wait for the next action.` }],
+    };
+  }
+);
+
+// --- guide_worker ---
+server.tool(
+  "guide_worker",
+  "Redirect the worker with new instructions. Use when the worker stopped but isn't done, or when you want to change its direction without denying a specific action.",
+  {
+    feedback: z.string().describe("Detailed guidance — what to do next, what direction to take"),
+  },
+  async ({ feedback }) => {
+    if (!hasPendingAction) {
+      return {
+        content: [{ type: "text" as const, text: "No pending action. Call review_next_action first." }],
+        isError: true,
+      };
+    }
+
+    const decision = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: `Supervisor guidance: ${feedback}`,
+      },
+    });
+
+    await writeQueue(getDecisionQueuePath(), decision);
+    hasPendingAction = false;
+
+    return {
+      content: [{ type: "text" as const, text: `Guided worker: ${feedback}\n\nCall review_next_action to wait for the next action.` }],
     };
   }
 );
