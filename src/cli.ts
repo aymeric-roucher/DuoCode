@@ -4,16 +4,37 @@
  * DuoCode CLI
  *
  * Usage:
- *   duocode start   — start the supervisor Claude Code session
- *   duocode stop    — stop the supervisor
- *   duocode status  — check if supervisor is running
- *   duocode install — register hooks in Claude Code settings
+ *   duo                — interactive mode: start supervisor + worker
+ *   duo "fix the bug"  — direct mode: pass prompt to worker
+ *   duo stop           — stop a running supervisor
+ *   duo status         — check supervisor status
  */
 
 import fs from "fs";
 import path from "path";
-import { spawn, execSync } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import { getDuoDir, ensureQueues } from "./queue.js";
+
+// ── Branding ──
+
+const CYAN = "\x1b[36m";
+const DIM = "\x1b[2m";
+const BOLD = "\x1b[1m";
+const RESET = "\x1b[0m";
+const GREEN = "\x1b[32m";
+const YELLOW = "\x1b[33m";
+
+function printHeader() {
+  console.log("");
+  console.log(`${CYAN}${BOLD}  ╭──────────────────────────────╮${RESET}`);
+  console.log(`${CYAN}${BOLD}  │         DuoCode v1.0         │${RESET}`);
+  console.log(`${CYAN}${BOLD}  ╰──────────────────────────────╯${RESET}`);
+  console.log(`${DIM}  Supervisor: Opus  │  Worker: your default model${RESET}`);
+  console.log(`${DIM}  Press Escape during review to take manual control${RESET}`);
+  console.log("");
+}
+
+// ── Supervisor prompt ──
 
 const SUPERVISOR_PROMPT = `You are a code review supervisor. Your job is to review tool calls proposed by a worker Claude Code instance and approve or deny them.
 
@@ -39,11 +60,18 @@ You have access to these tools:
 
 Start now by calling review_next_action.`;
 
+// ── State management ──
+
+interface DuoState {
+  active: boolean;
+  pid?: number;
+}
+
 function getStateFile(): string {
   return path.join(getDuoDir(), "state.json");
 }
 
-function readState(): { active: boolean; pid?: number; sessionId?: string } {
+function readState(): DuoState {
   const stateFile = getStateFile();
   if (!fs.existsSync(stateFile)) return { active: false };
   try {
@@ -53,64 +81,62 @@ function readState(): { active: boolean; pid?: number; sessionId?: string } {
   }
 }
 
-function writeState(state: {
-  active: boolean;
-  pid?: number;
-  sessionId?: string;
-}): void {
+function writeState(state: DuoState): void {
   const dir = getDuoDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(getStateFile(), JSON.stringify(state, null, 2));
 }
+
+// ── MCP config ──
 
 function getMcpConfigPath(): string {
   return path.join(getDuoDir(), "mcp-config.json");
 }
 
 function ensureMcpConfig(): void {
+  // Resolve the server script path
+  const srcServer = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    "mcp",
+    "server.ts"
+  );
+  const distServer = srcServer.replace(/\.ts$/, ".js");
+
+  const serverPath = fs.existsSync(distServer) ? distServer : srcServer;
+  const command = serverPath.endsWith(".ts") ? "tsx" : "node";
+
   const config = {
     mcpServers: {
       duo: {
-        command: "tsx",
-        args: [path.join(__dirname, "mcp", "server.ts")],
+        command,
+        args: [serverPath],
         env: { DUO_DIR: getDuoDir() },
       },
     },
   };
 
-  // If running from dist/, point to the compiled JS
-  const serverTs = path.join(__dirname, "mcp", "server.ts");
-  const serverJs = path.join(__dirname, "mcp", "server.js");
-  if (fs.existsSync(serverJs) && !fs.existsSync(serverTs)) {
-    config.mcpServers.duo.command = "node";
-    config.mcpServers.duo.args = [serverJs];
-  }
-
   fs.writeFileSync(getMcpConfigPath(), JSON.stringify(config, null, 2));
 }
 
-async function start() {
-  const state = readState();
-  if (state.active && state.pid) {
-    try {
-      process.kill(state.pid, 0); // Check if process is alive
-      console.log(`Supervisor already running (PID ${state.pid})`);
-      return;
-    } catch {
-      // Process is dead, clean up
-    }
-  }
+// ── Supervisor lifecycle ──
 
+function isSupervisorAlive(state: DuoState): boolean {
+  if (!state.active || !state.pid) return false;
+  try {
+    process.kill(state.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startSupervisor(): ChildProcess {
   const dir = getDuoDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   ensureQueues();
   ensureMcpConfig();
 
-  console.log("Starting DuoCode supervisor...");
-
-  // Launch Claude Code as the supervisor with our MCP server
-  // Always use the most capable model for supervision
   const child = spawn(
     "claude",
     [
@@ -133,76 +159,88 @@ async function start() {
   );
 
   child.unref();
-
   writeState({ active: true, pid: child.pid });
-
-  console.log(`Supervisor started (PID ${child.pid})`);
-  console.log("Worker tool calls will now be routed through the supervisor.");
+  return child;
 }
 
-function stop() {
+function stopSupervisor(): void {
   const state = readState();
-  if (!state.active) {
-    console.log("Supervisor is not running.");
-    return;
-  }
-
   if (state.pid) {
     try {
       process.kill(state.pid, "SIGTERM");
-      console.log(`Supervisor stopped (PID ${state.pid})`);
     } catch {
-      console.log("Supervisor process already gone.");
+      // already gone
     }
   }
-
   writeState({ active: false });
 }
 
-function status() {
+// ── Worker (the user-facing Claude Code) ──
+
+function launchWorker(prompt?: string): void {
+  const args: string[] = [];
+
+  if (prompt) {
+    // Direct mode: pass prompt, but keep interactive (not -p)
+    // Use --initial-prompt so it runs interactively with the prompt pre-filled
+    args.push("-p", prompt);
+  }
+
+  // Spawn worker as a foreground child, inheriting the terminal
+  const worker = spawn("claude", args, {
+    stdio: "inherit",
+    env: { ...process.env, DUO_ACTIVE: "1" },
+  });
+
+  worker.on("exit", (code) => {
+    // Clean up supervisor when worker exits
+    stopSupervisor();
+    process.exit(code ?? 0);
+  });
+
+  // Forward signals to worker
+  process.on("SIGINT", () => worker.kill("SIGINT"));
+  process.on("SIGTERM", () => {
+    worker.kill("SIGTERM");
+    stopSupervisor();
+  });
+}
+
+// ── Main ──
+
+const args = process.argv.slice(2);
+const command = args[0];
+
+if (command === "stop") {
+  stopSupervisor();
+  console.log(`${GREEN}Supervisor stopped.${RESET}`);
+  process.exit(0);
+}
+
+if (command === "status") {
   const state = readState();
-  if (!state.active) {
-    console.log("DuoCode supervisor: inactive");
-    return;
-  }
-
-  let alive = false;
-  if (state.pid) {
-    try {
-      process.kill(state.pid, 0);
-      alive = true;
-    } catch {
-      // dead
-    }
-  }
-
-  if (alive) {
-    console.log(`DuoCode supervisor: active (PID ${state.pid})`);
+  if (isSupervisorAlive(state)) {
+    console.log(`${GREEN}DuoCode supervisor: active${RESET} ${DIM}(PID ${state.pid})${RESET}`);
   } else {
-    console.log("DuoCode supervisor: stale (process dead, cleaning up)");
-    writeState({ active: false });
+    console.log(`${DIM}DuoCode supervisor: inactive${RESET}`);
+    if (state.active) writeState({ active: false });
   }
+  process.exit(0);
 }
 
-// --- Main ---
-const command = process.argv[2];
+// Default: start duo session
+printHeader();
 
-switch (command) {
-  case "start":
-    start();
-    break;
-  case "stop":
-    stop();
-    break;
-  case "status":
-    status();
-    break;
-  case "install":
-    // Handled by install.sh, but provide a hint
-    console.log("Run the install script: curl -fsSL ... | bash");
-    console.log("Or manually add hooks to ~/.claude/settings.json");
-    break;
-  default:
-    console.log("Usage: duocode <start|stop|status|install>");
-    process.exit(1);
+// Start or reuse supervisor
+const state = readState();
+if (isSupervisorAlive(state)) {
+  console.log(`${DIM}  Supervisor already running (PID ${state.pid})${RESET}`);
+} else {
+  const child = startSupervisor();
+  console.log(`${GREEN}  Supervisor started${RESET} ${DIM}(PID ${child.pid})${RESET}`);
 }
+console.log("");
+
+// Launch worker — if args provided, use them as prompt
+const prompt = args.length > 0 ? args.join(" ") : undefined;
+launchWorker(prompt);

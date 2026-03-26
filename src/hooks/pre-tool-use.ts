@@ -3,15 +3,16 @@
 /**
  * DuoCode PreToolUse Hook
  *
- * Called by Claude Code before every tool use. Reads the hook input from stdin,
- * extracts worker context from the transcript, writes the action to action.queue,
- * and blocks reading the supervisor's decision from decision.queue.
+ * Called by Claude Code before every tool use. Routes the action to the
+ * supervisor via named pipes and waits for the decision.
  *
- * If DuoCode is disabled (no action.queue exists), exits silently (no opinion).
+ * While waiting, shows a spinner on /dev/tty. If the user presses Escape,
+ * the supervisor is bypassed and the normal permission dialog takes over.
  */
 
 import fs from "fs";
 import readline from "readline";
+import path from "path";
 import {
   ensureQueues,
   getActionQueuePath,
@@ -20,7 +21,6 @@ import {
   readQueue,
   writeQueue,
 } from "../queue.js";
-import path from "path";
 
 interface HookInput {
   session_id: string;
@@ -33,7 +33,7 @@ interface HookInput {
   permission_mode: string;
 }
 
-// Auto-approved tools that don't need supervisor review
+// Tools that are auto-approved without supervisor review
 const AUTO_APPROVE_TOOLS = new Set([
   "Read",
   "Glob",
@@ -42,9 +42,94 @@ const AUTO_APPROVE_TOOLS = new Set([
   "TodoWrite",
   "TaskList",
   "TaskGet",
+  "TaskCreate",
+  "TaskUpdate",
 ]);
 
-/** Read the last N lines of the transcript since the last hook marker */
+// ── Spinner with Escape override ──
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const CYAN = "\x1b[36m";
+const DIM = "\x1b[2m";
+const RESET = "\x1b[0m";
+
+/**
+ * Show a spinner on /dev/tty while waiting for the supervisor.
+ * Returns a promise that resolves with:
+ *   - { override: true } if user pressed Escape
+ *   - { override: false } when cleanup() is called externally
+ */
+function startSpinner(toolName: string): {
+  promise: Promise<{ override: boolean }>;
+  cleanup: () => void;
+} {
+  let ttyFd: number | undefined;
+  let ttyOut: fs.WriteStream | undefined;
+  let interval: ReturnType<typeof setInterval> | undefined;
+  let ttyIn: fs.ReadStream | undefined;
+  let rlInterface: readline.Interface | undefined;
+  let resolved = false;
+  let resolvePromise: (val: { override: boolean }) => void;
+
+  const promise = new Promise<{ override: boolean }>((resolve) => {
+    resolvePromise = resolve;
+  });
+
+  try {
+    // Open /dev/tty for direct terminal access (bypasses stdin/stdout redirection)
+    ttyFd = fs.openSync("/dev/tty", "r");
+    ttyOut = fs.createWriteStream("/dev/tty");
+    ttyIn = fs.createReadStream("", { fd: ttyFd });
+
+    // Show spinner
+    let frame = 0;
+    ttyOut.write(`\n${CYAN}${SPINNER_FRAMES[0]}${RESET} ${DIM}Supervisor reviewing: ${toolName}  (Esc to override)${RESET}`);
+
+    interval = setInterval(() => {
+      frame = (frame + 1) % SPINNER_FRAMES.length;
+      ttyOut!.write(`\r${CYAN}${SPINNER_FRAMES[frame]}${RESET} ${DIM}Supervisor reviewing: ${toolName}  (Esc to override)${RESET}`);
+    }, 80);
+
+    // Listen for Escape key
+    if ("setRawMode" in ttyIn) (ttyIn as fs.ReadStream & { setRawMode(mode: boolean): void }).setRawMode(true);
+    rlInterface = readline.createInterface({ input: ttyIn });
+
+    ttyIn.on("data", (data: Buffer) => {
+      // Escape = 0x1b
+      if (data[0] === 0x1b && !resolved) {
+        resolved = true;
+        cleanup();
+        resolvePromise({ override: true });
+      }
+    });
+  } catch {
+    // If /dev/tty is not available (e.g., non-interactive), skip spinner
+  }
+
+  function cleanup() {
+    if (interval) clearInterval(interval);
+    if (ttyOut) {
+      ttyOut.write("\r\x1b[K"); // Clear the spinner line
+      try { ttyOut.end(); } catch { /* ignore */ }
+    }
+    if (ttyIn) {
+      try { if ("setRawMode" in ttyIn) (ttyIn as fs.ReadStream & { setRawMode(mode: boolean): void }).setRawMode(false); } catch { /* ignore */ }
+      try { ttyIn.destroy(); } catch { /* ignore */ }
+    }
+    if (rlInterface) {
+      try { rlInterface.close(); } catch { /* ignore */ }
+    }
+    if (!resolved) {
+      resolved = true;
+      resolvePromise({ override: false });
+    }
+  }
+
+  return { promise, cleanup };
+}
+
+// ── Transcript context extraction ──
+
 async function extractWorkerContext(
   transcriptPath: string,
   maxLines = 50
@@ -60,16 +145,13 @@ async function extractWorkerContext(
       lines.push(line);
     }
 
-    // Walk backwards from the end, collect assistant text and tool results
-    // until we hit the previous hook marker or run out of lines
     const contextParts: string[] = [];
     const start = Math.max(0, lines.length - maxLines);
 
     for (let i = start; i < lines.length; i++) {
       try {
-        const entry = JSON.parse(lines[i]);
+        const entry = JSON.parse(lines[i]!);
         if (entry.role === "assistant" && entry.content) {
-          // Extract text blocks from assistant messages
           const textBlocks = Array.isArray(entry.content)
             ? entry.content
                 .filter((b: { type: string }) => b.type === "text")
@@ -79,7 +161,6 @@ async function extractWorkerContext(
             contextParts.push(textBlocks.join("\n"));
           }
         } else if (entry.role === "tool" && entry.content) {
-          // Summarize tool results briefly
           const text =
             typeof entry.content === "string"
               ? entry.content
@@ -99,7 +180,8 @@ async function extractWorkerContext(
   }
 }
 
-/** Check if DuoCode is active (queues exist and supervisor is running) */
+// ── State check ──
+
 function isDuoActive(): boolean {
   const stateFile = path.join(getDuoDir(), "state.json");
   if (!fs.existsSync(stateFile)) return false;
@@ -111,6 +193,8 @@ function isDuoActive(): boolean {
   }
 }
 
+// ── Main ──
+
 async function main() {
   // Read hook input from stdin
   const chunks: string[] = [];
@@ -119,21 +203,22 @@ async function main() {
   }
   const input: HookInput = JSON.parse(chunks.join(""));
 
-  // If DuoCode not active, exit with no opinion
+  // If DuoCode not active, no opinion
   if (!isDuoActive()) {
     process.exit(0);
   }
 
   // Auto-approve safe read-only tools
   if (AUTO_APPROVE_TOOLS.has(input.tool_name)) {
-    const result = {
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "allow",
-        permissionDecisionReason: "DuoCode: auto-approved read-only tool",
-      },
-    };
-    process.stdout.write(JSON.stringify(result));
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "allow",
+          permissionDecisionReason: "DuoCode: auto-approved read-only tool",
+        },
+      })
+    );
     process.exit(0);
   }
 
@@ -155,15 +240,46 @@ async function main() {
 
   await writeQueue(getActionQueuePath(), action);
 
-  // Block reading decision from queue (until supervisor approves/denies)
-  const decision = await readQueue(getDecisionQueuePath());
+  // Start spinner + Escape listener while waiting for supervisor
+  const spinner = startSpinner(input.tool_name);
 
-  // Pass decision through to Claude Code
-  process.stdout.write(decision);
+  // Race: supervisor decision vs user Escape
+  const decisionPromise = readQueue(getDecisionQueuePath());
+
+  const result = await Promise.race([
+    decisionPromise.then((d) => ({ type: "decision" as const, data: d })),
+    spinner.promise.then((s) =>
+      s.override ? { type: "override" as const } : { type: "wait" as const }
+    ),
+  ]);
+
+  if (result.type === "override") {
+    // User pressed Escape — escalate to normal permission dialog
+    spinner.cleanup();
+    // We still need to consume the supervisor's decision when it arrives
+    // so the FIFO doesn't block. Fire-and-forget read.
+    decisionPromise.then(() => {}).catch(() => {});
+    process.stdout.write(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: "ask",
+          permissionDecisionReason: "User overrode supervisor review",
+        },
+      })
+    );
+  } else if (result.type === "decision") {
+    spinner.cleanup();
+    process.stdout.write(result.data);
+  } else {
+    // Spinner finished without override — wait for actual decision
+    const decision = await decisionPromise;
+    spinner.cleanup();
+    process.stdout.write(decision);
+  }
 }
 
 main().catch((err) => {
   process.stderr.write(`DuoCode hook error: ${err}\n`);
-  // Exit with non-2 code so Claude Code continues normally
   process.exit(1);
 });
