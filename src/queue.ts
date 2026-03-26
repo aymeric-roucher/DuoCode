@@ -33,11 +33,8 @@ export function getAnswerQueuePath(): string {
 }
 
 function ensureFifo(fifoPath: string): void {
-  try {
-    const stat = fs.statSync(fifoPath);
-    if (stat.isFIFO()) return;
-    fs.unlinkSync(fifoPath); // Not a FIFO, recreate
-  } catch { /* doesn't exist */ }
+  // Always recreate to clear stale readers/writers from previous sessions
+  try { fs.unlinkSync(fifoPath); } catch { /* doesn't exist */ }
   execSync(`mkfifo "${fifoPath}"`);
 }
 
