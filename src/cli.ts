@@ -139,7 +139,7 @@ function isSupervisorAlive(state: DuoState): boolean {
   }
 }
 
-function startSupervisor(): ChildProcess {
+function startSupervisor(userTask?: string): ChildProcess {
   const dir = getDuoDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
@@ -158,7 +158,9 @@ function startSupervisor(): ChildProcess {
       "--disallowedTools",
       "Bash,Edit,Write,Read,Glob,Grep,Agent,WebFetch,WebSearch",
       "-p",
-      SUPERVISOR_PROMPT,
+      userTask
+        ? `${SUPERVISOR_PROMPT}\n\n## Worker's assigned task\n\n${userTask}`
+        : SUPERVISOR_PROMPT,
     ],
     {
       stdio: [
@@ -302,22 +304,20 @@ if (command === "status") {
 // Default: start duo session
 printHeader();
 
+// Parse prompt before starting supervisor (so supervisor knows the task)
+const prompt = cliArgs.length > 0 ? cliArgs.join(" ") : undefined;
+
 // Start or reuse supervisor
 const state = readState();
 if (isSupervisorAlive(state)) {
   console.log(`${DIM}  Supervisor already running (PID ${state.pid})${RESET}`);
 } else {
-  const child = startSupervisor();
+  const child = startSupervisor(prompt);
   console.log(`${GREEN}  Supervisor started${RESET} ${DIM}(PID ${child.pid})${RESET}`);
 }
 console.log("");
 
-// TODO: WhatsApp connect disabled for now
-// const waAuthDir = path.join(getDuoDir(), "whatsapp-auth");
-// let whatsapp: WhatsAppClient | null = null;
-
 // Launch worker
-const prompt = cliArgs.length > 0 ? cliArgs.join(" ") : undefined;
 launchWorker(prompt);
 
 // TODO: question listener disabled — readQueue blocks the event loop on openSync

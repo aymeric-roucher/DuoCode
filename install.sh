@@ -40,13 +40,20 @@ fi
 # 4. Create the hook runners
 cat > "$DUO_DIR/hook.sh" << HOOKEOF
 #!/usr/bin/env bash
-# Only activate for the specific worker Claude Code process launched by duo
+# Only activate for processes descended from the duo worker
 PIDFILE="$DUO_DIR/worker.pid"
 if [ ! -f "\$PIDFILE" ]; then exit 0; fi
 WORKER_PID=\$(cat "\$PIDFILE" 2>/dev/null)
-if [ "\$PPID" != "\$WORKER_PID" ]; then exit 0; fi
-export DUO_ACTIVE=1
-exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/pre-tool-use.ts"
+if [ -z "\$WORKER_PID" ]; then exit 0; fi
+PID=\$\$
+while [ "\$PID" -gt 1 ] 2>/dev/null; do
+  PID=\$(ps -o ppid= -p "\$PID" 2>/dev/null | tr -d ' ')
+  if [ "\$PID" = "\$WORKER_PID" ]; then
+    export DUO_ACTIVE=1
+    exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/pre-tool-use.ts"
+  fi
+done
+exit 0
 HOOKEOF
 chmod +x "$DUO_DIR/hook.sh"
 
@@ -55,9 +62,16 @@ cat > "$DUO_DIR/stop-hook.sh" << HOOKEOF
 PIDFILE="$DUO_DIR/worker.pid"
 if [ ! -f "\$PIDFILE" ]; then exit 0; fi
 WORKER_PID=\$(cat "\$PIDFILE" 2>/dev/null)
-if [ "\$PPID" != "\$WORKER_PID" ]; then exit 0; fi
-export DUO_ACTIVE=1
-exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/stop.ts"
+if [ -z "\$WORKER_PID" ]; then exit 0; fi
+PID=\$\$
+while [ "\$PID" -gt 1 ] 2>/dev/null; do
+  PID=\$(ps -o ppid= -p "\$PID" 2>/dev/null | tr -d ' ')
+  if [ "\$PID" = "\$WORKER_PID" ]; then
+    export DUO_ACTIVE=1
+    exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/stop.ts"
+  fi
+done
+exit 0
 HOOKEOF
 chmod +x "$DUO_DIR/stop-hook.sh"
 
