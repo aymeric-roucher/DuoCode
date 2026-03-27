@@ -108,21 +108,17 @@ function getMcpConfigPath(): string {
 }
 
 function ensureMcpConfig(): void {
-  const srcServer = path.resolve(
+  const installDir = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
-    "mcp",
-    "server.ts"
+    ".."
   );
-  const distServer = srcServer.replace(/\.ts$/, ".js");
-
-  const serverPath = fs.existsSync(distServer) ? distServer : srcServer;
-  const command = serverPath.endsWith(".ts") ? "tsx" : "node";
+  const serverPath = path.join(installDir, "src", "mcp", "server.ts");
 
   const config = {
     mcpServers: {
       duo: {
-        command,
-        args: [serverPath],
+        command: "npx",
+        args: ["--prefix", installDir, "tsx", serverPath],
         env: { DUO_DIR: getDuoDir() },
       },
     },
@@ -165,7 +161,11 @@ function startSupervisor(): ChildProcess {
       SUPERVISOR_PROMPT,
     ],
     {
-      stdio: "ignore",
+      stdio: [
+        "ignore",
+        fs.openSync(path.join(dir, "supervisor.log"), "w"),
+        fs.openSync(path.join(dir, "supervisor.log"), "a"),
+      ],
       detached: true,
       env: { ...process.env, DUO_DIR: dir },
     }
@@ -309,23 +309,13 @@ if (isSupervisorAlive(state)) {
 }
 console.log("");
 
-// Connect WhatsApp if credentials exist
-const waAuthDir = path.join(getDuoDir(), "whatsapp-auth");
-let whatsapp: WhatsAppClient | null = null;
-if (webAuthExists(waAuthDir)) {
-  try {
-    whatsapp = await createWhatsAppClient(waAuthDir);
-    await whatsapp.connect();
-    console.log(`${GREEN}  WhatsApp connected${RESET}`);
-  } catch {
-    console.log(`${DIM}  WhatsApp unavailable (run 'duo whatsapp-login' to set up)${RESET}`);
-    whatsapp = null;
-  }
-}
-
-// Start listening for supervisor questions (blocks on FIFO, no polling)
-listenForQuestions(whatsapp).catch(() => {});
+// TODO: WhatsApp connect disabled for now
+// const waAuthDir = path.join(getDuoDir(), "whatsapp-auth");
+// let whatsapp: WhatsAppClient | null = null;
 
 // Launch worker
 const prompt = cliArgs.length > 0 ? cliArgs.join(" ") : undefined;
 launchWorker(prompt);
+
+// TODO: question listener disabled — readQueue blocks the event loop on openSync
+// listenForQuestions(whatsapp).catch(() => {});
