@@ -40,10 +40,7 @@ fi
 # 4. Create the hook runners
 cat > "$DUO_DIR/hook.sh" << HOOKEOF
 #!/usr/bin/env bash
-if [ "\${DUO_ACTIVE:-}" != "1" ]; then
-  exit 0
-fi
-# Check if supervisor is active before running the hook
+# NB: Claude Code does NOT pass parent env vars to hooks — use state.json
 STATE="$DUO_DIR/state.json"
 if [ ! -f "\$STATE" ] || ! grep -q '"active": true' "\$STATE"; then
   exit 0
@@ -55,9 +52,6 @@ chmod +x "$DUO_DIR/hook.sh"
 
 cat > "$DUO_DIR/stop-hook.sh" << HOOKEOF
 #!/usr/bin/env bash
-if [ "\${DUO_ACTIVE:-}" != "1" ]; then
-  exit 0
-fi
 STATE="$DUO_DIR/state.json"
 if [ ! -f "\$STATE" ] || ! grep -q '"active": true' "\$STATE"; then
   exit 0
