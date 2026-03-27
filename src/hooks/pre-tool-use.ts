@@ -44,7 +44,25 @@ const AUTO_APPROVE_TOOLS = new Set([
   "TaskGet",
   "TaskCreate",
   "TaskUpdate",
+  "Agent",
+  "WebFetch",
+  "WebSearch",
 ]);
+
+// Bash commands that are safe to auto-approve (read-only)
+const SAFE_BASH_PREFIXES = [
+  "ls", "cat", "head", "tail", "pwd", "which", "find", "wc",
+  "file", "stat", "du", "df", "uname", "whoami", "date", "env",
+  "echo", "printf", "test ", "[ ", "true", "false",
+  "git status", "git log", "git diff", "git show", "git branch",
+  "npm test", "npm run test", "npx vitest", "npx jest",
+  "node -e", "python -c", "python3 -c",
+];
+
+function isSafeBashCommand(input: Record<string, unknown>): boolean {
+  const cmd = (input.command as string || "").trim();
+  return SAFE_BASH_PREFIXES.some((prefix) => cmd.startsWith(prefix));
+}
 
 // ── Spinner with Escape override ──
 
@@ -196,8 +214,9 @@ async function main() {
   }
   const input: HookInput = JSON.parse(chunks.join(""));
 
-  // Auto-approve safe read-only tools
-  if (AUTO_APPROVE_TOOLS.has(input.tool_name)) {
+  // Auto-approve safe tools (read-only tools + safe bash commands)
+  if (AUTO_APPROVE_TOOLS.has(input.tool_name) ||
+      (input.tool_name === "Bash" && isSafeBashCommand(input.tool_input))) {
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
