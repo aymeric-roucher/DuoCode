@@ -249,13 +249,16 @@ function launchWorker(prompt: string | undefined): void {
   }
 
   // Spawn worker as a foreground child, inheriting the terminal.
-  // DUO_ACTIVE=1 tells the global hook to activate.
   const worker = spawn("claude", args, {
     stdio: "inherit",
-    env: { ...process.env, DUO_ACTIVE: "1" },
   });
 
+  // Write worker PID so hook.sh can check PPID against it
+  const pidFile = path.join(getDuoDir(), "worker.pid");
+  if (worker.pid) fs.writeFileSync(pidFile, String(worker.pid));
+
   worker.on("exit", (code) => {
+    try { fs.unlinkSync(pidFile); } catch { /* ignore */ }
     stopSupervisor();
     process.exit(code ?? 0);
   });
