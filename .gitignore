@@ -2,3 +2,5 @@ node_modules/
 dist/
 *.queue
 state.json
+3d-demo.html
+.DS_Store
