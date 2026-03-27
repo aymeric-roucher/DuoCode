@@ -246,6 +246,9 @@ async function listenForQuestions(whatsapp: WhatsAppClient | null): Promise<void
 function launchWorker(prompt: string | undefined): void {
   const args: string[] = [];
 
+  // The supervisor is the permission gate, so the worker auto-accepts edits
+  args.push("--permission-mode", "acceptEdits");
+
   if (prompt) {
     args.push(prompt);
   }
