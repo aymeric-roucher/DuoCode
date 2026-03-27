@@ -66,7 +66,7 @@ esac
 
 # For everything else, pass to the TypeScript hook
 export DUO_ACTIVE=1
-echo "$INPUT" | exec npx --prefix "INSTALLDIR" tsx "INSTALLDIR/src/hooks/pre-tool-use.ts"
+echo "$INPUT" | npx --prefix "INSTALLDIR" tsx "INSTALLDIR/src/hooks/pre-tool-use.ts"
 HOOKEOF
 # Replace placeholders with actual paths
 sed -i '' "s|DUODIR|$DUO_DIR|g" "$DUO_DIR/hook.sh"
