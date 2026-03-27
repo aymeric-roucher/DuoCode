@@ -57,6 +57,7 @@ const SAFE_BASH_PREFIXES = [
   "git status", "git log", "git diff", "git show", "git branch",
   "npm test", "npm run test", "npx vitest", "npx jest",
   "node -e", "python -c", "python3 -c",
+  "open ", "curl ", "wget ",
 ];
 
 function isSafeBashCommand(input: Record<string, unknown>): boolean {

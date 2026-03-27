@@ -26,9 +26,8 @@ import {
   writeQueue,
 } from "../queue.js";
 
-ensureQueues();
-
-// Signal readiness so the CLI knows we can accept actions
+// Don't recreate FIFOs — the CLI already created them.
+// Just signal readiness.
 fs.writeFileSync(path.join(getDuoDir(), "ready"), String(process.pid));
 
 let hasPendingAction = false;
