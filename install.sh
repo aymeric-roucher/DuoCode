@@ -38,41 +38,59 @@ if [ ! -f "$DUO_DIR/state.json" ]; then
 fi
 
 # 4. Create the hook runners
-cat > "$DUO_DIR/hook.sh" << HOOKEOF
+cat > "$DUO_DIR/hook.sh" << 'HOOKEOF'
 #!/usr/bin/env bash
 # Only activate for processes descended from the duo worker
-PIDFILE="$DUO_DIR/worker.pid"
-if [ ! -f "\$PIDFILE" ]; then exit 0; fi
-WORKER_PID=\$(cat "\$PIDFILE" 2>/dev/null)
-if [ -z "\$WORKER_PID" ]; then exit 0; fi
-PID=\$\$
-while [ "\$PID" -gt 1 ] 2>/dev/null; do
-  PID=\$(ps -o ppid= -p "\$PID" 2>/dev/null | tr -d ' ')
-  if [ "\$PID" = "\$WORKER_PID" ]; then
-    export DUO_ACTIVE=1
-    exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/pre-tool-use.ts"
-  fi
+PIDFILE="DUODIR/worker.pid"
+if [ ! -f "$PIDFILE" ]; then exit 0; fi
+WORKER_PID=$(cat "$PIDFILE" 2>/dev/null)
+if [ -z "$WORKER_PID" ]; then exit 0; fi
+PID=$$
+MATCH=0
+while [ "$PID" -gt 1 ] 2>/dev/null; do
+  PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+  if [ "$PID" = "$WORKER_PID" ]; then MATCH=1; break; fi
 done
-exit 0
+if [ "$MATCH" != "1" ]; then exit 0; fi
+
+# Read stdin (hook input JSON)
+INPUT=$(cat)
+TOOL=$(echo "$INPUT" | grep -o '"tool_name":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+# Auto-approve read-only tools in bash — skip Node startup entirely
+case "$TOOL" in
+  Read|Glob|Grep|Agent|WebFetch|WebSearch|TodoRead|TodoWrite|TaskList|TaskGet|TaskCreate|TaskUpdate)
+    echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"DuoCode: auto-approved"}}'
+    exit 0 ;;
+esac
+
+# For everything else, pass to the TypeScript hook
+export DUO_ACTIVE=1
+echo "$INPUT" | exec npx --prefix "INSTALLDIR" tsx "INSTALLDIR/src/hooks/pre-tool-use.ts"
 HOOKEOF
+# Replace placeholders with actual paths
+sed -i '' "s|DUODIR|$DUO_DIR|g" "$DUO_DIR/hook.sh"
+sed -i '' "s|INSTALLDIR|$INSTALL_DIR|g" "$DUO_DIR/hook.sh"
 chmod +x "$DUO_DIR/hook.sh"
 
-cat > "$DUO_DIR/stop-hook.sh" << HOOKEOF
+cat > "$DUO_DIR/stop-hook.sh" << 'HOOKEOF'
 #!/usr/bin/env bash
-PIDFILE="$DUO_DIR/worker.pid"
-if [ ! -f "\$PIDFILE" ]; then exit 0; fi
-WORKER_PID=\$(cat "\$PIDFILE" 2>/dev/null)
-if [ -z "\$WORKER_PID" ]; then exit 0; fi
-PID=\$\$
-while [ "\$PID" -gt 1 ] 2>/dev/null; do
-  PID=\$(ps -o ppid= -p "\$PID" 2>/dev/null | tr -d ' ')
-  if [ "\$PID" = "\$WORKER_PID" ]; then
+PIDFILE="DUODIR/worker.pid"
+if [ ! -f "$PIDFILE" ]; then exit 0; fi
+WORKER_PID=$(cat "$PIDFILE" 2>/dev/null)
+if [ -z "$WORKER_PID" ]; then exit 0; fi
+PID=$$
+while [ "$PID" -gt 1 ] 2>/dev/null; do
+  PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+  if [ "$PID" = "$WORKER_PID" ]; then
     export DUO_ACTIVE=1
-    exec npx --prefix "$INSTALL_DIR" tsx "$INSTALL_DIR/src/hooks/stop.ts"
+    exec npx --prefix "INSTALLDIR" tsx "INSTALLDIR/src/hooks/stop.ts"
   fi
 done
 exit 0
 HOOKEOF
+sed -i '' "s|DUODIR|$DUO_DIR|g" "$DUO_DIR/stop-hook.sh"
+sed -i '' "s|INSTALLDIR|$INSTALL_DIR|g" "$DUO_DIR/stop-hook.sh"
 chmod +x "$DUO_DIR/stop-hook.sh"
 
 # 5. Write MCP config for the supervisor
