@@ -19,6 +19,7 @@ import { getDuoDir, ensureQueues, getQuestionQueuePath, getAnswerQueuePath, read
 import { whatsappLogin } from "./whatsapp/login.js";
 import { createWhatsAppClient, type WhatsAppClient } from "./whatsapp/client.js";
 import { webAuthExists } from "./whatsapp/session.js";
+import { showPromptBox } from "./prompt-box.js";
 
 // ── Branding ──
 
@@ -175,6 +176,10 @@ function startSupervisor(userTask?: string): ChildProcess {
 
   child.unref();
   writeState({ active: true, pid: child.pid });
+  // Write supervisor PID to its own file so hook.sh can exclude it without parsing JSON
+  if (child.pid) {
+    fs.writeFileSync(path.join(dir, "supervisor.pid"), String(child.pid));
+  }
   return child;
 }
 
@@ -188,6 +193,7 @@ function stopSupervisor(): void {
     }
   }
   writeState({ active: false });
+  try { fs.unlinkSync(path.join(getDuoDir(), "supervisor.pid")); } catch { /* ignore */ }
 }
 
 // ── Question listener (blocks on FIFO, prompts user via /dev/tty) ──
@@ -307,8 +313,21 @@ if (command === "status") {
 // Default: start duo session
 printHeader();
 
-// Parse prompt before starting supervisor (so supervisor knows the task)
-const prompt = cliArgs.length > 0 ? cliArgs.join(" ") : undefined;
+// Parse prompt — from CLI args, or interactively via the prompt box
+let prompt: string | undefined =
+  cliArgs.length > 0 ? cliArgs.join(" ") : undefined;
+
+if (!prompt) {
+  const result = await showPromptBox();
+  if (result) {
+    prompt = result.text;
+    if (result.images.length > 0) {
+      prompt +=
+        "\n\n[Attached images — use the Read tool to view them:]\n" +
+        result.images.map((img) => `- ${img}`).join("\n");
+    }
+  }
+}
 
 // Start or reuse supervisor
 const state = readState();

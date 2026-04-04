@@ -40,15 +40,23 @@ fi
 # 4. Create the hook runners
 cat > "$DUO_DIR/hook.sh" << 'HOOKEOF'
 #!/usr/bin/env bash
-# Only activate for processes descended from the duo worker
+# Only activate for processes descended from the duo worker.
+# Snapshot the full process tree in ONE ps call to avoid races where
+# intermediate processes die between individual ps lookups (this broke
+# subagent hooks with the old per-PID ps approach).
 PIDFILE="DUODIR/worker.pid"
 if [ ! -f "$PIDFILE" ]; then exit 0; fi
 WORKER_PID=$(cat "$PIDFILE" 2>/dev/null)
 if [ -z "$WORKER_PID" ]; then exit 0; fi
+
+PSTREE=$(ps -eo pid=,ppid= 2>/dev/null)
 PID=$$
 MATCH=0
-while [ "$PID" -gt 1 ] 2>/dev/null; do
-  PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+DEPTH=0
+while [ "$DEPTH" -lt 30 ]; do
+  DEPTH=$((DEPTH + 1))
+  PID=$(echo "$PSTREE" | awk -v p="$PID" '$1+0 == p+0 { print $2+0; exit }')
+  if [ -z "$PID" ] || [ "$PID" -le 1 ] 2>/dev/null; then break; fi
   if [ "$PID" = "$WORKER_PID" ]; then MATCH=1; break; fi
 done
 if [ "$MATCH" != "1" ]; then exit 0; fi
@@ -63,6 +71,20 @@ case "$TOOL" in
     echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"DuoCode: auto-approved"}}'
     exit 0 ;;
 esac
+
+# Acquire lock for FIFO serialization (parallel subagents)
+LOCKDIR="DUODIR/hook.lock.d"
+LOCK_START=$(date +%s)
+while ! mkdir "$LOCKDIR" 2>/dev/null; do
+  LOCK_PID=$(cat "$LOCKDIR/pid" 2>/dev/null)
+  if [ -n "$LOCK_PID" ] && ! kill -0 "$LOCK_PID" 2>/dev/null; then
+    rm -rf "$LOCKDIR"; continue
+  fi
+  if [ $(( $(date +%s) - LOCK_START )) -ge 120 ]; then exit 0; fi
+  sleep 0.1
+done
+echo $$ > "$LOCKDIR/pid"
+trap 'rm -rf "$LOCKDIR"' EXIT
 
 # For everything else, pass to the TypeScript hook
 export DUO_ACTIVE=1
@@ -79,9 +101,14 @@ PIDFILE="DUODIR/worker.pid"
 if [ ! -f "$PIDFILE" ]; then exit 0; fi
 WORKER_PID=$(cat "$PIDFILE" 2>/dev/null)
 if [ -z "$WORKER_PID" ]; then exit 0; fi
+
+PSTREE=$(ps -eo pid=,ppid= 2>/dev/null)
 PID=$$
-while [ "$PID" -gt 1 ] 2>/dev/null; do
-  PID=$(ps -o ppid= -p "$PID" 2>/dev/null | tr -d ' ')
+DEPTH=0
+while [ "$DEPTH" -lt 30 ]; do
+  DEPTH=$((DEPTH + 1))
+  PID=$(echo "$PSTREE" | awk -v p="$PID" '$1+0 == p+0 { print $2+0; exit }')
+  if [ -z "$PID" ] || [ "$PID" -le 1 ] 2>/dev/null; then break; fi
   if [ "$PID" = "$WORKER_PID" ]; then
     export DUO_ACTIVE=1
     exec npx --prefix "INSTALLDIR" tsx "INSTALLDIR/src/hooks/stop.ts"
