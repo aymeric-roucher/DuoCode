@@ -10,8 +10,8 @@
 
 import fs from "fs";
 import readline from "readline";
+import { spawn } from "child_process";
 import {
-  ensureQueues,
   getActionQueuePath,
   getDecisionQueuePath,
   writeQueue,
@@ -63,13 +63,21 @@ async function main() {
     process.exit(0);
   }
 
+  // Watchdog: readQueue uses blocking openSync which freezes the event loop,
+  // so setTimeout can never fire. Spawn a background process that kills us
+  // after 30s if we're still stuck waiting for the supervisor.
+  process.on("SIGTERM", () => process.exit(0));
+  const watchdog = spawn("bash", ["-c", `sleep 30 && kill ${process.pid} 2>/dev/null`], {
+    detached: true,
+    stdio: "ignore",
+  });
+  watchdog.unref();
+
   const chunks: string[] = [];
   for await (const chunk of process.stdin) {
     chunks.push(chunk);
   }
   const input: HookInput = JSON.parse(chunks.join(""));
-
-  ensureQueues();
 
   const recentOutput = await extractRecentOutput(input.transcript_path);
 
@@ -84,8 +92,9 @@ async function main() {
 
   await writeQueue(getActionQueuePath(), action);
 
-  // Wait for supervisor decision
+  // Wait for supervisor decision (watchdog kills us after 30s if stuck)
   const raw = await readQueue(getDecisionQueuePath());
+
   let decision: { hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string } };
   try {
     decision = JSON.parse(raw);
@@ -98,11 +107,10 @@ async function main() {
   if (perm === "deny") {
     // Supervisor wants to redirect — prevent the stop and inject feedback
     const feedback = decision.hookSpecificOutput?.permissionDecisionReason ?? "";
-    const result = JSON.stringify({
-      continue: false,
-      systemMessage: feedback,
-    });
-    process.stdout.write(result);
+    process.stdout.write(JSON.stringify({
+      decision: "block",
+      reason: `Supervisor: ${feedback}`,
+    }));
   }
   // If approved or anything else, exit normally (worker stops)
 }

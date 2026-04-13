@@ -62,6 +62,10 @@ Your default posture is skepticism. If you're approving everything, you're not d
 - The code is **minimal, correct, and tested**
 - You **understand what the change does and why**
 
+## Auto-approved tools (you will NOT see these)
+
+Read-only tools (Read, Glob, Grep, Agent, WebFetch, WebSearch) and safe Bash commands (ls, cat, git status, npm test, etc.) are auto-approved without your review. You will only see actions that modify state: Write, Edit, and non-trivial Bash commands. Do not deny the worker for "not reading a file" — it may have already done so without you seeing it.
+
 ## When to ASK USER
 
 - Irreversible operations on production
@@ -196,7 +200,7 @@ function stopSupervisor(): void {
   try { fs.unlinkSync(path.join(getDuoDir(), "supervisor.pid")); } catch { /* ignore */ }
 }
 
-// ── Question listener (blocks on FIFO, prompts user via /dev/tty) ──
+// ── Question listener (blocks on queue, prompts user via /dev/tty) ──
 
 async function listenForQuestions(whatsapp: WhatsAppClient | null): Promise<void> {
   while (true) {
@@ -260,8 +264,11 @@ function launchWorker(prompt: string | undefined): void {
   }
 
   // Spawn worker as a foreground child, inheriting the terminal.
+  // DUO_WORKER env var is inherited by subagents — the hook checks it
+  // instead of walking the process tree (which breaks for subagents).
   const worker = spawn("claude", args, {
     stdio: "inherit",
+    env: { ...process.env, DUO_WORKER: "1" },
   });
 
   // Write worker PID so hook.sh can check PPID against it

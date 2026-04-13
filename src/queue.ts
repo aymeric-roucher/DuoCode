@@ -1,7 +1,7 @@
 /**
- * Queue — FIFO-based IPC between the PreToolUse hook and the MCP server.
+ * Queue — IPC between the PreToolUse hook and the MCP server.
  *
- * Named pipes:
+ * Queues (backed by OS named pipes):
  *   action.queue   — hook writes proposed action, MCP server reads
  *   decision.queue — MCP server writes decision, hook reads
  *   question.queue — MCP server writes user question, CLI reads
@@ -32,22 +32,24 @@ export function getAnswerQueuePath(): string {
   return path.join(getDuoDir(), "answer.queue");
 }
 
-function ensureFifo(fifoPath: string): void {
-  // Always recreate to clear stale readers/writers from previous sessions
-  try { fs.unlinkSync(fifoPath); } catch { /* doesn't exist */ }
-  execSync(`mkfifo "${fifoPath}"`);
+function ensureQueueFile(queuePath: string): void {
+  // Recreate to clear stale readers/writers from previous sessions.
+  // ONLY call this at session startup (cli.ts), never from hooks —
+  // recreating while the supervisor is blocking on a read destroys the pipe.
+  try { fs.unlinkSync(queuePath); } catch { /* doesn't exist */ }
+  execSync(`mkfifo "${queuePath}"`);
 }
 
 export function ensureQueues(): void {
   const dir = getDuoDir();
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  ensureFifo(getActionQueuePath());
-  ensureFifo(getDecisionQueuePath());
-  ensureFifo(getQuestionQueuePath());
-  ensureFifo(getAnswerQueuePath());
+  ensureQueueFile(getActionQueuePath());
+  ensureQueueFile(getDecisionQueuePath());
+  ensureQueueFile(getQuestionQueuePath());
+  ensureQueueFile(getAnswerQueuePath());
 }
 
-/** Read from a named pipe. Blocks until a writer writes and closes. */
+/** Read from a queue. Blocks until a writer writes and closes. */
 export function readQueue(queuePath: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const fd = fs.openSync(queuePath, fs.constants.O_RDONLY);
@@ -63,7 +65,7 @@ export function readQueue(queuePath: string): Promise<string> {
 }
 
 /**
- * Write to a named pipe using O_NONBLOCK + retry.
+ * Write to a queue using O_NONBLOCK + retry.
  * If no reader is ready yet, retries every pollMs until one appears.
  */
 export async function writeQueue(

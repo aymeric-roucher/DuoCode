@@ -4,7 +4,7 @@
  * DuoCode PreToolUse Hook
  *
  * Called by Claude Code before every tool use. Routes the action to the
- * supervisor via named pipes and waits for the decision.
+ * supervisor via queues and waits for the decision.
  *
  * While waiting, shows a spinner on /dev/tty. If the user presses Escape,
  * the supervisor is bypassed and the normal permission dialog takes over.
@@ -14,7 +14,6 @@ import fs from "fs";
 import readline from "readline";
 import path from "path";
 import {
-  ensureQueues,
   getActionQueuePath,
   getDecisionQueuePath,
   getDuoDir,
@@ -230,8 +229,6 @@ async function main() {
     process.exit(0);
   }
 
-  ensureQueues();
-
   // Extract worker context from transcript
   const workerContext = await extractWorkerContext(input.transcript_path);
 
@@ -265,7 +262,7 @@ async function main() {
     // User pressed Escape — escalate to normal permission dialog
     spinner.cleanup();
     // We still need to consume the supervisor's decision when it arrives
-    // so the FIFO doesn't block. Fire-and-forget read.
+    // so the queue doesn't block. Fire-and-forget read.
     decisionPromise.then(() => { }).catch(() => { });
     process.stdout.write(
       JSON.stringify({

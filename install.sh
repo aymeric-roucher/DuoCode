@@ -40,26 +40,10 @@ fi
 # 4. Create the hook runners
 cat > "$DUO_DIR/hook.sh" << 'HOOKEOF'
 #!/usr/bin/env bash
-# Only activate for processes descended from the duo worker.
-# Snapshot the full process tree in ONE ps call to avoid races where
-# intermediate processes die between individual ps lookups (this broke
-# subagent hooks with the old per-PID ps approach).
-PIDFILE="DUODIR/worker.pid"
-if [ ! -f "$PIDFILE" ]; then exit 0; fi
-WORKER_PID=$(cat "$PIDFILE" 2>/dev/null)
-if [ -z "$WORKER_PID" ]; then exit 0; fi
-
-PSTREE=$(ps -eo pid=,ppid= 2>/dev/null)
-PID=$$
-MATCH=0
-DEPTH=0
-while [ "$DEPTH" -lt 30 ]; do
-  DEPTH=$((DEPTH + 1))
-  PID=$(echo "$PSTREE" | awk -v p="$PID" '$1+0 == p+0 { print $2+0; exit }')
-  if [ -z "$PID" ] || [ "$PID" -le 1 ] 2>/dev/null; then break; fi
-  if [ "$PID" = "$WORKER_PID" ]; then MATCH=1; break; fi
-done
-if [ "$MATCH" != "1" ]; then exit 0; fi
+# Only activate inside the duo worker (and its subagents).
+# The worker is launched with DUO_WORKER=1 which propagates to all
+# child processes including subagents, regardless of process tree shape.
+if [ "$DUO_WORKER" != "1" ]; then exit 0; fi
 
 # Read stdin (hook input JSON)
 INPUT=$(cat)
@@ -72,7 +56,7 @@ case "$TOOL" in
     exit 0 ;;
 esac
 
-# Acquire lock for FIFO serialization (parallel subagents)
+# Acquire lock for queue serialization (parallel subagents)
 LOCKDIR="DUODIR/hook.lock.d"
 LOCK_START=$(date +%s)
 while ! mkdir "$LOCKDIR" 2>/dev/null; do
@@ -97,26 +81,10 @@ chmod +x "$DUO_DIR/hook.sh"
 
 cat > "$DUO_DIR/stop-hook.sh" << 'HOOKEOF'
 #!/usr/bin/env bash
-PIDFILE="DUODIR/worker.pid"
-if [ ! -f "$PIDFILE" ]; then exit 0; fi
-WORKER_PID=$(cat "$PIDFILE" 2>/dev/null)
-if [ -z "$WORKER_PID" ]; then exit 0; fi
-
-PSTREE=$(ps -eo pid=,ppid= 2>/dev/null)
-PID=$$
-DEPTH=0
-while [ "$DEPTH" -lt 30 ]; do
-  DEPTH=$((DEPTH + 1))
-  PID=$(echo "$PSTREE" | awk -v p="$PID" '$1+0 == p+0 { print $2+0; exit }')
-  if [ -z "$PID" ] || [ "$PID" -le 1 ] 2>/dev/null; then break; fi
-  if [ "$PID" = "$WORKER_PID" ]; then
-    export DUO_ACTIVE=1
-    exec npx --prefix "INSTALLDIR" tsx "INSTALLDIR/src/hooks/stop.ts"
-  fi
-done
-exit 0
+if [ "$DUO_WORKER" != "1" ]; then exit 0; fi
+export DUO_ACTIVE=1
+exec npx --prefix "INSTALLDIR" tsx "INSTALLDIR/src/hooks/stop.ts"
 HOOKEOF
-sed -i '' "s|DUODIR|$DUO_DIR|g" "$DUO_DIR/stop-hook.sh"
 sed -i '' "s|INSTALLDIR|$INSTALL_DIR|g" "$DUO_DIR/stop-hook.sh"
 chmod +x "$DUO_DIR/stop-hook.sh"
 

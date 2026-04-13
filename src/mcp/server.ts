@@ -16,7 +16,6 @@ import { z } from "zod";
 import fs from "fs";
 import path from "path";
 import {
-  ensureQueues,
   getActionQueuePath,
   getAnswerQueuePath,
   getDecisionQueuePath,
@@ -26,9 +25,14 @@ import {
   writeQueue,
 } from "../queue.js";
 
-// Don't recreate FIFOs — the CLI already created them.
+// Don't recreate queues — the CLI already created them.
 // Just signal readiness.
 fs.writeFileSync(path.join(getDuoDir(), "ready"), String(process.pid));
+
+const logFile = path.join(getDuoDir(), "mcp.log");
+function log(msg: string): void {
+  fs.appendFileSync(logFile, `${new Date().toISOString()} ${msg}\n`);
+}
 
 let hasPendingAction = false;
 
@@ -58,6 +62,7 @@ server.tool(
     hasPendingAction = true;
 
     const toolName = (action.tool_name as string) || "unknown";
+    log(`review_next_action: received tool=${toolName}`);
     const toolInput = action.tool_input || {};
     const workerContext = (action.worker_context as string) || "";
 
@@ -65,9 +70,17 @@ server.tool(
     if (workerContext) {
       text += `## Worker context since last review\n\n${workerContext}\n\n---\n\n`;
     }
-    text += `## Proposed action\n\n`;
-    text += `**Tool:** ${toolName}\n`;
-    text += `**Input:**\n\`\`\`json\n${JSON.stringify(toolInput, null, 2)}\n\`\`\`\n`;
+
+    if (toolName === "__worker_stopped__") {
+      text += `## Worker has stopped\n\n`;
+      text += `The worker finished and is waiting for your decision.\n\n`;
+      text += `- Call **approve** if the task is complete\n`;
+      text += `- Call **deny** with feedback to redirect the worker (it will keep working)\n`;
+    } else {
+      text += `## Proposed action\n\n`;
+      text += `**Tool:** ${toolName}\n`;
+      text += `**Input:**\n\`\`\`json\n${JSON.stringify(toolInput, null, 2)}\n\`\`\`\n`;
+    }
 
     return { content: [{ type: "text" as const, text }] };
   }
@@ -94,6 +107,7 @@ server.tool(
       },
     });
 
+    log(`approve: ${reason}`);
     await writeQueue(getDecisionQueuePath(), decision);
     hasPendingAction = false;
 
@@ -126,6 +140,7 @@ server.tool(
       },
     });
 
+    log(`deny: ${feedback}`);
     await writeQueue(getDecisionQueuePath(), decision);
     hasPendingAction = false;
 

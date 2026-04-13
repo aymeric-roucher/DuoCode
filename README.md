@@ -61,14 +61,14 @@ duo status           # check if supervisor is running
   ├── hook.sh                 PreToolUse hook (registered in settings.json)
   ├── mcp-config.json         MCP server config for supervisor
   ├── state.json              supervisor PID + active flag
-  ├── action.queue            named pipe: hook → MCP server
-  └── decision.queue          named pipe: MCP server → hook
+  ├── action.queue            queue: hook → MCP server
+  └── decision.queue          queue: MCP server → hook
 ```
 
 - **CLI** (`src/cli.ts`) — starts supervisor (Opus, background), then launches worker (`claude`) in foreground
-- **Hook** (`src/hooks/pre-tool-use.ts`) — intercepts tool calls, sends to supervisor via named pipe, shows spinner with Escape override
-- **MCP server** (`src/mcp/server.ts`) — runs inside the supervisor Claude Code. Reads actions from the pipe, presents them to the supervisor, writes decisions back. Exposes `review_next_action`, `approve`, `deny`, `ask_user`.
-- **Named pipes** (`action.queue`, `decision.queue`) — synchronization between hook and MCP server. Zero overhead, no polling.
+- **Hook** (`src/hooks/pre-tool-use.ts`) — intercepts tool calls, sends to supervisor via queue, shows spinner with Escape override
+- **MCP server** (`src/mcp/server.ts`) — runs inside the supervisor Claude Code. Reads actions from the queue, presents them to the supervisor, writes decisions back. Exposes `review_next_action`, `approve`, `deny`, `ask_user`.
+- **Queues** (`action.queue`, `decision.queue`) — synchronization between hook and MCP server. Zero overhead, no polling.
 
 ## Supervisor model
 
